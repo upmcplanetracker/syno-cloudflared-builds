@@ -3,7 +3,7 @@ name: Build Cloudflared SPK (DS224+)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * 0" # Runs automatically every Sunday at midnight
+    - cron: "0 3 * * *"  # Runs every day at 3:00 AM UTC (11:00 PM EDT)
 
 jobs:
   build-and-release:
