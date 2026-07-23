@@ -1,19 +1,15 @@
-name: Build Cloudflared SPK
+name: Build Cloudflared SPK (DS224+)
 
 on:
   workflow_dispatch:
-    inputs:
-      arch:
-        description: 'Target Architecture (e.g., v1000, geminilake, r1000) or "all-supported"'
-        required: true
-        default: 'v1000'
+  schedule:
+    - cron: "0 0 * * 0" # Runs automatically every Sunday at midnight
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
     container: ghcr.io/synocommunity/spksrc
-    
-    # Grant permissions required for creating Releases
+
     permissions:
       contents: write
 
@@ -33,11 +29,22 @@ jobs:
           releases-only: true
         id: fork-version
 
-      - run: |
-          echo "Upstream cloudflared: ${{ steps.cloudflared-version.outputs.tag }}"
-          echo "Your latest release: ${{ steps.fork-version.outputs.tag }}"
+      - name: Check if update is needed
+        id: check-version
+        run: |
+          UPSTREAM="${{ steps.cloudflared-version.outputs.tag }}"
+          FORK="${{ steps.fork-version.outputs.tag }}"
+          echo "Upstream: $UPSTREAM | Current Fork Release: $FORK"
+          
+          if [ "$UPSTREAM" != "$FORK" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
+            echo "Already on latest version ($UPSTREAM). Skipping build."
+          fi
 
       - name: Pull SynoCommunity spksrc
+        if: steps.check-version.outputs.build_needed == 'true'
         uses: GuillaumeFalourd/clone-github-repo-action@v2.3
         with:
           depth: 1
@@ -46,37 +53,37 @@ jobs:
           repository: 'spksrc'
 
       - name: Prepare build environment
+        if: steps.check-version.outputs.build_needed == 'true'
         run: cd spksrc/ && make setup
 
-      - name: Cache toolchains
+      - name: Cache toolchain
+        if: steps.check-version.outputs.build_needed == 'true'
         uses: actions/cache@v4
         with:
           path: spksrc/distrib/toolchain
-          key: toolchain-${{ github.event.inputs.arch || 'v1000' }}
+          key: toolchain-geminilake
 
       - name: Update versions in Makefiles
+        if: steps.check-version.outputs.build_needed == 'true'
         run: |
           TAG="${{ steps.cloudflared-version.outputs.tag }}"
-          # Strip leading 'v' if present for SPK internal versioning
           RAW_VERS="${TAG#v}"
           
           sed -i "s/^PKG_VERS = .*/PKG_VERS = ${RAW_VERS}/" spksrc/cross/cloudflared/Makefile
           sed -i "s/^SPK_VERS = .*/SPK_VERS = ${RAW_VERS}/" spksrc/spk/cloudflared/Makefile
 
       - name: Update digests
+        if: steps.check-version.outputs.build_needed == 'true'
         run: cd spksrc/cross/cloudflared && make digests
 
-      - name: Build SPK
+      - name: Build SPK for geminilake (DS224+)
+        if: steps.check-version.outputs.build_needed == 'true'
         run: |
           cd spksrc/spk/cloudflared
-          TARGET="${{ github.event.inputs.arch || 'v1000' }}"
-          if [ "$TARGET" = "all-supported" ]; then
-            make all-supported
-          else
-            make arch-$TARGET
-          fi
+          make arch-geminilake
 
       - name: Calculate SHA256 Checksums
+        if: steps.check-version.outputs.build_needed == 'true'
         id: sha256
         run: |
           cd spksrc/packages
@@ -85,6 +92,7 @@ jobs:
           echo 'EOF' >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
+        if: steps.check-version.outputs.build_needed == 'true'
         uses: ncipollo/release-action@v1.20.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -92,9 +100,9 @@ jobs:
           tag: ${{ steps.cloudflared-version.outputs.tag }}
           name: "cloudflared ${{ steps.cloudflared-version.outputs.tag }}"
           body: |
-            Automated build of cloudflared ${{ steps.cloudflared-version.outputs.tag }} for Synology.
+            Automated build of cloudflared ${{ steps.cloudflared-version.outputs.tag }} for Synology (geminilake / DS224+).
             
-            ### Checksums (SHA256)
+            ### Checksum (SHA256)
             ```
             ${{ steps.sha256.outputs.SUMS }}
             ```
