@@ -1,0 +1,100 @@
+name: Build Cloudflared SPK
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'Target Architecture (e.g., v1000, geminilake, r1000) or "all-supported"'
+        required: true
+        default: 'v1000'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    container: ghcr.io/synocommunity/spksrc
+    
+    # Grant permissions required for creating Releases
+    permissions:
+      contents: write
+
+    steps:
+      - name: Get latest cloudflared version
+        uses: oprypin/find-latest-tag@v1
+        with:
+          repository: cloudflare/cloudflared
+          releases-only: true
+        id: cloudflared-version
+
+      - name: Get latest release in THIS fork
+        uses: oprypin/find-latest-tag@v1
+        continue-on-error: true
+        with:
+          repository: ${{ github.repository }}
+          releases-only: true
+        id: fork-version
+
+      - run: |
+          echo "Upstream cloudflared: ${{ steps.cloudflared-version.outputs.tag }}"
+          echo "Your latest release: ${{ steps.fork-version.outputs.tag }}"
+
+      - name: Pull SynoCommunity spksrc
+        uses: GuillaumeFalourd/clone-github-repo-action@v2.3
+        with:
+          depth: 1
+          branch: 'master'
+          owner: 'SynoCommunity'
+          repository: 'spksrc'
+
+      - name: Prepare build environment
+        run: cd spksrc/ && make setup
+
+      - name: Cache toolchains
+        uses: actions/cache@v4
+        with:
+          path: spksrc/distrib/toolchain
+          key: toolchain-${{ github.event.inputs.arch || 'v1000' }}
+
+      - name: Update versions in Makefiles
+        run: |
+          TAG="${{ steps.cloudflared-version.outputs.tag }}"
+          # Strip leading 'v' if present for SPK internal versioning
+          RAW_VERS="${TAG#v}"
+          
+          sed -i "s/^PKG_VERS = .*/PKG_VERS = ${RAW_VERS}/" spksrc/cross/cloudflared/Makefile
+          sed -i "s/^SPK_VERS = .*/SPK_VERS = ${RAW_VERS}/" spksrc/spk/cloudflared/Makefile
+
+      - name: Update digests
+        run: cd spksrc/cross/cloudflared && make digests
+
+      - name: Build SPK
+        run: |
+          cd spksrc/spk/cloudflared
+          TARGET="${{ github.event.inputs.arch || 'v1000' }}"
+          if [ "$TARGET" = "all-supported" ]; then
+            make all-supported
+          else
+            make arch-$TARGET
+          fi
+
+      - name: Calculate SHA256 Checksums
+        id: sha256
+        run: |
+          cd spksrc/packages
+          echo 'SUMS<<EOF' >> "$GITHUB_OUTPUT"
+          sha256sum *.spk >> "$GITHUB_OUTPUT"
+          echo 'EOF' >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1.20.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: spksrc/packages/*.spk
+          tag: ${{ steps.cloudflared-version.outputs.tag }}
+          name: "cloudflared ${{ steps.cloudflared-version.outputs.tag }}"
+          body: |
+            Automated build of cloudflared ${{ steps.cloudflared-version.outputs.tag }} for Synology.
+            
+            ### Checksums (SHA256)
+            ```
+            ${{ steps.sha256.outputs.SUMS }}
+            ```
