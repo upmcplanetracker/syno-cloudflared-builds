@@ -58,7 +58,7 @@ jobs:
 
       - name: Cache toolchain
         if: steps.check-version.outputs.build_needed == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: spksrc/distrib/toolchain
           key: toolchain-geminilake
